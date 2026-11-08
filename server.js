@@ -7,10 +7,11 @@ const path     = require('path');
 const fs       = require('fs');
 
 // ── Fonte ────────────────────────────────────────────────────────────────────
-const FONT_PATH = path.join(__dirname, 'fonts', 'Nunito-Bold.ttf');
+const FONT_PATH = path.join(__dirname, 'fonts', 'Nunito.ttf');
 let FONT = 'sans-serif';
 if (fs.existsSync(FONT_PATH)) {
   GlobalFonts.registerFromPath(FONT_PATH, 'AppFont');
+  GlobalFonts.registerFromPath(path.join(__dirname, 'fonts', 'Nunito-ExtraBold.ttf'), 'AppFont');
   FONT = 'AppFont';
   console.log('[steal-api] Fonte: AppFont (Nunito)');
 } else {
@@ -30,7 +31,7 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 // ── Cache de imagens ──────────────────────────────────────────────────────────
 const imgCache = new Map();
 
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const BROWSER_UA = 'steal-api/1.0 (Discord steal log card generator)';
 
 async function fetchBrainrotImage(name) {
   if (imgCache.has(name)) return imgCache.get(name);
@@ -171,7 +172,18 @@ async function generateCard(data) {
   drawSparkles(ctx, W, H);
 
   // ── 2. Imagem do brainrot (esquerda, como o gato do MEOWL) ───────────────
-  const imgW=190, imgH=300, imgX=15, imgY=(H-imgH)/2;
+  const logoY = brainrotImg ? 70 : H/2;
+  ctx.textAlign='center'; ctx.lineJoin='round';
+  for (const [txt, dy, size] of [['STEAL', -10, 54], ['LOG', 44, 54]]) {
+    ctx.font=`800 ${size}px "${FONT}"`;
+    ctx.shadowBlur=10; ctx.shadowColor='rgba(150,70,0,0.35)'; ctx.shadowOffsetY=4;
+    ctx.strokeStyle='#FFFFFF'; ctx.lineWidth=10; ctx.strokeText(txt, 108, logoY+dy); ns(ctx);
+    const lg = ctx.createLinearGradient(0, logoY+dy-size, 0, logoY+dy);
+    lg.addColorStop(0,'#FFB224'); lg.addColorStop(1,'#E8630A');
+    ctx.fillStyle=lg; ctx.fillText(txt, 108, logoY+dy);
+  }
+
+  const imgW=180, imgH=250, imgX=18, imgY=145;
   if (brainrotImg) {
     // sombra suave
     ctx.shadowBlur=20; ctx.shadowColor='rgba(180,100,0,0.25)'; ctx.shadowOffsetX=4; ctx.shadowOffsetY=6;
@@ -337,4 +349,5 @@ app.post('/steal', async (req, res) => {
 
 app.get('/', (_req, res) => res.json({ status: 'steal-api online', font: FONT }));
 
-app.listen(PORT, () => console.log(`[steal-api] Porta ${PORT} | Fonte: ${FONT}`));
+module.exports = { generateCard };
+if (!process.env.NO_LISTEN) app.listen(PORT, () => console.log(`[steal-api] Porta ${PORT} | Fonte: ${FONT}`));

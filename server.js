@@ -24,6 +24,13 @@ app.use(express.json());
 
 const PORT        = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const STEAL_KEY   = process.env.STEAL_KEY;
+
+function validKey(given) {
+  if (!STEAL_KEY || typeof given !== 'string') return false;
+  const a = Buffer.from(given), b = Buffer.from(STEAL_KEY);
+  return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+}
 
 // ── Imagens ──────────────────────────────────────────────────────────────────
 const imgCache = new Map();
@@ -407,6 +414,7 @@ async function generateGif(data) {
 
 // ── Rotas ────────────────────────────────────────────────────────────────────
 app.post('/steal', async (req, res) => {
+  if (!validKey(req.get('X-Steal-Key'))) return res.status(401).json({ error: 'unauthorized' });
   const { name, mutation, traits, genText, value, stealer, stealerId } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   if (!WEBHOOK_URL) return res.status(400).json({ error: 'WEBHOOK_URL not set' });

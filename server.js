@@ -13,13 +13,9 @@ if (fs.existsSync(FONT_PATH)) {
   GlobalFonts.registerFromPath(FONT_PATH, 'AppFont');
   GlobalFonts.registerFromPath(path.join(__dirname, 'fonts', 'Nunito-ExtraBold.ttf'), 'AppFont');
   FONT = 'AppFont';
-  console.log('[steal-api] Fonte: AppFont (Nunito)');
 } else {
   try { GlobalFonts.loadSystemFonts(); } catch(e) {}
-  FONT = GlobalFonts.has('Liberation Sans') ? 'Liberation Sans'
-       : GlobalFonts.has('DejaVu Sans')     ? 'DejaVu Sans'
-       : 'sans-serif';
-  console.log('[steal-api] Fonte fallback:', FONT);
+  FONT = GlobalFonts.has('DejaVu Sans') ? 'DejaVu Sans' : 'sans-serif';
 }
 
 const app = express();
@@ -28,22 +24,23 @@ app.use(express.json());
 const PORT        = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
-// ── Cache de imagens ──────────────────────────────────────────────────────────
+// ── Imagens ──────────────────────────────────────────────────────────────────
 const imgCache = new Map();
-
-const BROWSER_UA = 'steal-api/1.0 (Discord steal log card generator)';
+const UA = 'steal-api/1.0 (Discord steal log card generator)';
+let logoImg = null;
+loadImage(path.join(__dirname, 'assets', 'logo.webp')).then(i => { logoImg = i; }).catch(() => {});
 
 async function fetchBrainrotImage(name) {
   if (imgCache.has(name)) return imgCache.get(name);
   try {
     const r = await axios.get(
-      `https://stealabrainrot.fandom.com/api.php?action=query&titles=${encodeURIComponent(name)}&prop=pageimages&pithumbsize=250&format=json`,
-      { headers: { 'User-Agent': BROWSER_UA }, timeout: 5000 }
+      `https://stealabrainrot.fandom.com/api.php?action=query&titles=${encodeURIComponent(name)}&prop=pageimages&pithumbsize=300&format=json`,
+      { headers: { 'User-Agent': UA }, timeout: 5000 }
     );
     const page = Object.values(r.data?.query?.pages || {})[0];
     const thumb = page?.thumbnail?.source;
     if (!thumb) { imgCache.set(name, null); return null; }
-    const imgR = await axios.get(thumb, { responseType: 'arraybuffer', headers: { 'User-Agent': BROWSER_UA }, timeout: 5000 });
+    const imgR = await axios.get(thumb, { responseType: 'arraybuffer', headers: { 'User-Agent': UA }, timeout: 5000 });
     const img = await loadImage(Buffer.from(imgR.data));
     imgCache.set(name, img);
     return img;
@@ -52,15 +49,22 @@ async function fetchBrainrotImage(name) {
   }
 }
 
-// ── Cores de mutação ──────────────────────────────────────────────────────────
 const MUTATION_COLORS = {
-  Bloodrot:'#C0003A', Candy:'#FF46F6', Crystal:'#C389E5', Cursed:'#F53838',
-  Cyber:'#5DCFFF',   Diamond:'#25C4FE', Divine:'#FFD13B', Eclipse:'#FFDB6F',
-  Galaxy:'#AA3CFF',  Gold:'#FFD700',   Lava:'#FF7A00',   Phantom:'#BBBBBB',
-  Radioactive:'#68F500', Rainbow:'#FF00FB', Yinyang:'#CCCCCC', Normal:'#FF4444',
+  Bloodrot:'#FF3B6B', Candy:'#FF6AF8', Crystal:'#D2A4F0', Cursed:'#FF5A5A',
+  Cyber:'#6FD8FF',   Diamond:'#4FD2FF', Divine:'#FFD84F', Eclipse:'#FFE08A',
+  Galaxy:'#C07BFF',  Gold:'#FFD24A',   Lava:'#FF8A2A',   Phantom:'#D0D0D0',
+  Radioactive:'#86FF3A', Rainbow:'#FF5AF5', Yinyang:'#E6E6E6', Normal:'#F7D2BD',
 };
 
-// ── Helpers de canvas ─────────────────────────────────────────────────────────
+// ── Paleta Luxar ─────────────────────────────────────────────────────────────
+const C = {
+  bg0:'#16060D', bg1:'#2A0B18', bg2:'#4A1628',
+  rose0:'#FBDDCB', rose1:'#E2A88F', rose2:'#A8695A',
+  panel:'rgba(38,10,22,0.88)', pill:'rgba(10,2,6,0.38)',
+  label:'#C9A0A4', text:'#FDEFE7', dark:'#2A0C18',
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function rrect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y); ctx.arcTo(x+w, y, x+w, y+r, r);
@@ -69,256 +73,259 @@ function rrect(ctx, x, y, w, h, r) {
   ctx.lineTo(x, y+r); ctx.arcTo(x, y, x+r, y, r);
   ctx.closePath();
 }
-
 function ns(ctx) { ctx.shadowBlur=0; ctx.shadowColor='transparent'; ctx.shadowOffsetX=0; ctx.shadowOffsetY=0; }
+function roseGrad(ctx, x, y, w, h) {
+  const g = ctx.createLinearGradient(x, y, x+w, y+h);
+  g.addColorStop(0, C.rose0); g.addColorStop(0.5, C.rose1); g.addColorStop(1, C.rose2);
+  return g;
+}
+function rng(seed) { let s = seed; return () => (s = (s*16807) % 2147483647) / 2147483647; }
 
-function star(ctx, cx, cy, pts, ro, ri) {
-  ctx.beginPath();
-  for (let i = 0; i < pts*2; i++) {
-    const r = i%2===0 ? ro : ri;
-    const a = (i * Math.PI / pts) - Math.PI/2;
-    i===0 ? ctx.moveTo(cx+r*Math.cos(a), cy+r*Math.sin(a))
-           : ctx.lineTo(cx+r*Math.cos(a), cy+r*Math.sin(a));
+function snowflake(ctx, x, y, r, a) {
+  ctx.save(); ctx.translate(x, y); ctx.strokeStyle=`rgba(255,255,255,${a})`; ctx.lineWidth=1.4; ctx.lineCap='round';
+  for (let i=0; i<6; i++) {
+    ctx.rotate(Math.PI/3);
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-r);
+    ctx.moveTo(0,-r*0.55); ctx.lineTo(-r*0.25,-r*0.8);
+    ctx.moveTo(0,-r*0.55); ctx.lineTo(r*0.25,-r*0.8);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Neve escorrendo na borda de cima de um painel (igual à logo IX)
+function snowCap(ctx, x, y, w, h, r, depth) {
+  ctx.save(); rrect(ctx, x, y, w, h, r); ctx.clip();
+  const g = ctx.createLinearGradient(0, y, 0, y+depth+8);
+  g.addColorStop(0, '#FFFFFF'); g.addColorStop(1, '#DCE6F2');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+depth);
+  const step = 22;
+  for (let px = x+w; px > x; px -= step) {
+    const dip = (Math.floor(px/step) % 3 === 0) ? 9 : 4;
+    ctx.quadraticCurveTo(px-step/2, y+depth+dip, px-step, y+depth);
   }
   ctx.closePath();
+  ctx.shadowBlur=6; ctx.shadowColor='rgba(0,0,0,0.35)'; ctx.shadowOffsetY=2;
+  ctx.fill(); ns(ctx);
+  ctx.restore();
 }
 
-// Desenha estrelinhas decorativas espalhadas no fundo
-function drawSparkles(ctx, W, H) {
-  const positions = [
-    [55,30],[140,15],[700,25],[780,50],[820,20],[840,320],
-    [810,380],[30,350],[160,390],[60,200],[750,200],[820,250],
-  ];
-  for (const [x,y] of positions) {
-    const sz = 6 + Math.random()*6;
-    ctx.fillStyle = `rgba(255,210,0,${0.4+Math.random()*0.4})`;
-    star(ctx, x, y, 4, sz, sz*0.4);
-    ctx.fill();
-    // pequeno círculo brilhante
-    ctx.beginPath(); ctx.arc(x, y, sz*0.2, 0, Math.PI*2);
-    ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.fill();
-  }
+function glassPanel(ctx, x, y, w, h, r, border) {
+  ctx.shadowBlur=26; ctx.shadowColor='rgba(0,0,0,0.55)'; ctx.shadowOffsetY=8;
+  const g = ctx.createLinearGradient(x, y, x, y+h);
+  g.addColorStop(0, 'rgba(70,20,38,0.92)'); g.addColorStop(1, 'rgba(30,8,17,0.94)');
+  ctx.fillStyle = g; rrect(ctx, x, y, w, h, r); ctx.fill(); ns(ctx);
+  ctx.strokeStyle = border || roseGrad(ctx, x, y, w, h); ctx.lineWidth = 3;
+  rrect(ctx, x, y, w, h, r); ctx.stroke();
+  ctx.strokeStyle='rgba(251,221,203,0.12)'; ctx.lineWidth=1;
+  rrect(ctx, x+5, y+5, w-10, h-10, Math.max(r-4, 2)); ctx.stroke();
 }
 
-// Ícone de campo — quadrado laranja arredondado com símbolo branco
-function drawFieldIcon(ctx, x, y, size, type) {
-  const r = size * 0.28;
-  ctx.fillStyle = '#F5820D';
-  ctx.shadowBlur=8; ctx.shadowColor='rgba(200,80,0,0.3)'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=3;
-  rrect(ctx, x, y, size, size, r); ctx.fill(); ns(ctx);
-
-  const cx = x+size/2, cy = y+size/2;
-  ctx.fillStyle = '#FFFFFF'; ctx.strokeStyle = '#FFFFFF';
-
+function fieldIcon(ctx, x, y, s, type) {
+  ctx.shadowBlur=10; ctx.shadowColor='rgba(226,168,143,0.35)'; ctx.shadowOffsetY=3;
+  ctx.fillStyle = roseGrad(ctx, x, y, s, s); rrect(ctx, x, y, s, s, s*0.28); ctx.fill(); ns(ctx);
+  const cx = x+s/2, cy = y+s/2;
+  ctx.fillStyle = C.dark; ctx.strokeStyle = C.dark; ctx.lineCap='round';
   if (type === 'pet') {
-    // Pata: círculo central + 3 tocos
-    ctx.beginPath(); ctx.arc(cx, cy+size*0.06, size*0.19, 0, Math.PI*2); ctx.fill();
-    for (let i=-1; i<=1; i++) {
-      ctx.beginPath(); ctx.arc(cx+i*size*0.17, cy-size*0.17, size*0.1, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy+s*0.08, s*0.17, 0, Math.PI*2); ctx.fill();
+    for (const [dx, dy] of [[-0.2,-0.08],[-0.08,-0.22],[0.08,-0.22],[0.2,-0.08]]) {
+      ctx.beginPath(); ctx.arc(cx+dx*s, cy+dy*s, s*0.075, 0, Math.PI*2); ctx.fill();
     }
   } else if (type === 'mutation') {
-    // Dupla hélice simplificada
-    ctx.lineWidth = size*0.1; ctx.lineCap='round';
-    ctx.beginPath(); ctx.moveTo(cx-size*0.14, cy-size*0.3);
-    ctx.bezierCurveTo(cx+size*0.18, cy-size*0.08, cx-size*0.18, cy+size*0.08, cx+size*0.14, cy+size*0.3);
-    ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(cx+size*0.14, cy-size*0.3);
-    ctx.bezierCurveTo(cx-size*0.18, cy-size*0.08, cx+size*0.18, cy+size*0.08, cx-size*0.14, cy+size*0.3);
-    ctx.stroke();
-  } else if (type === 'gen') {
-    // Estrela
-    star(ctx, cx, cy, 5, size*0.3, size*0.13); ctx.fill();
-  } else if (type === 'traits') {
-    // 3 linhas horizontais (hamburger)
-    ctx.lineWidth = size*0.1; ctx.lineCap='round';
-    for (let i = -1; i<=1; i++) {
-      ctx.beginPath();
-      ctx.moveTo(cx-size*0.26, cy+i*size*0.14);
-      ctx.lineTo(cx+size*0.26, cy+i*size*0.14);
+    ctx.lineWidth = s*0.08;
+    for (const sgn of [1,-1]) {
+      ctx.beginPath(); ctx.moveTo(cx-sgn*s*0.16, cy-s*0.28);
+      ctx.bezierCurveTo(cx+sgn*s*0.22, cy-s*0.06, cx-sgn*s*0.22, cy+s*0.06, cx+sgn*s*0.16, cy+s*0.28);
       ctx.stroke();
     }
+    ctx.lineWidth = s*0.05;
+    for (const dy of [-0.12, 0, 0.12]) { ctx.beginPath(); ctx.moveTo(cx-s*0.1, cy+dy*s); ctx.lineTo(cx+s*0.1, cy+dy*s); ctx.stroke(); }
+  } else if (type === 'gen') {
+    ctx.beginPath();
+    for (let i=0; i<10; i++) {
+      const r = i%2 ? s*0.13 : s*0.3, a = i*Math.PI/5 - Math.PI/2;
+      i ? ctx.lineTo(cx+r*Math.cos(a), cy+r*Math.sin(a)) : ctx.moveTo(cx+r*Math.cos(a), cy+r*Math.sin(a));
+    }
+    ctx.closePath(); ctx.fill();
+  } else if (type === 'traits') {
+    ctx.beginPath();
+    ctx.moveTo(cx-s*0.26, cy-s*0.2); ctx.lineTo(cx+s*0.06, cy-s*0.2); ctx.lineTo(cx+s*0.28, cy);
+    ctx.lineTo(cx+s*0.06, cy+s*0.2); ctx.lineTo(cx-s*0.26, cy+s*0.2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = C.rose0; ctx.beginPath(); ctx.arc(cx-s*0.12, cy, s*0.06, 0, Math.PI*2); ctx.fill();
+  } else if (type === 'clock') {
+    ctx.lineWidth = s*0.08;
+    ctx.beginPath(); ctx.arc(cx, cy, s*0.26, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, cy-s*0.15); ctx.moveTo(cx, cy); ctx.lineTo(cx+s*0.12, cy+s*0.05); ctx.stroke();
+  } else if (type === 'date') {
+    ctx.lineWidth = s*0.07;
+    rrect(ctx, cx-s*0.25, cy-s*0.2, s*0.5, s*0.45, s*0.06); ctx.stroke();
+    ctx.fillRect(cx-s*0.25, cy-s*0.2, s*0.5, s*0.12);
+  } else if (type === 'user') {
+    ctx.beginPath(); ctx.arc(cx, cy-s*0.1, s*0.15, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx, cy+s*0.26, s*0.26, s*0.2, 0, Math.PI, 0); ctx.fill();
   }
 }
 
-// ── Geração do card ──────────────────────────────────────────────────────────
+function fitText(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+
+function drawContain(ctx, img, x, y, w, h) {
+  const sc = Math.min(w/img.width, h/img.height);
+  const dw = img.width*sc, dh = img.height*sc;
+  ctx.drawImage(img, x+(w-dw)/2, y+(h-dh)/2, dw, dh);
+}
+
+// ── Card ─────────────────────────────────────────────────────────────────────
 async function generateCard(data) {
   const W=860, H=420;
   const canvas = createCanvas(W, H);
-  const ctx    = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d');
 
   const mutKey   = data.mutation ? (data.mutation[0].toUpperCase()+data.mutation.slice(1).toLowerCase()) : 'Normal';
   const mutColor = MUTATION_COLORS[mutKey] || MUTATION_COLORS.Normal;
   const traits   = Array.isArray(data.traits) ? data.traits : [];
-  const stealer  = data.stealer  || 'Unknown';
-  const name     = data.name     || 'Unknown';
-  const genText  = data.genText  || data.value || 'N/A';
+  const stealer  = data.stealer || 'Unknown';
+  const name     = data.name    || 'Unknown';
+  const genText  = data.genText || data.value || 'N/A';
   const brainrotImg = await fetchBrainrotImage(name);
+  const rand = rng(1337);
 
-  // ── 1. Fundo quente ──────────────────────────────────────────────────────
+  // Fundo bordô
+  ctx.save(); rrect(ctx, 0, 0, W, H, 24); ctx.clip();
   const bg = ctx.createLinearGradient(0, 0, W, H);
-  bg.addColorStop(0, '#FFF6DC');
-  bg.addColorStop(0.5, '#FFE9B0');
-  bg.addColorStop(1, '#FFD880');
-  ctx.fillStyle = bg;
-  rrect(ctx, 0, 0, W, H, 24); ctx.fill();
-
-  // Vinheta suave nas bordas
-  const vign = ctx.createRadialGradient(W/2, H/2, H*0.2, W/2, H/2, H*0.8);
-  vign.addColorStop(0, 'rgba(255,200,80,0)');
-  vign.addColorStop(1, 'rgba(220,140,0,0.18)');
-  ctx.fillStyle = vign; rrect(ctx,0,0,W,H,24); ctx.fill();
-
-  // Estrelinhas decorativas
-  drawSparkles(ctx, W, H);
-
-  // ── 2. Imagem do brainrot (esquerda, como o gato do MEOWL) ───────────────
-  const logoY = brainrotImg ? 70 : H/2;
-  ctx.textAlign='center'; ctx.lineJoin='round';
-  for (const [txt, dy, size] of [['STEAL', -10, 54], ['LOG', 44, 54]]) {
-    ctx.font=`800 ${size}px "${FONT}"`;
-    ctx.shadowBlur=10; ctx.shadowColor='rgba(150,70,0,0.35)'; ctx.shadowOffsetY=4;
-    ctx.strokeStyle='#FFFFFF'; ctx.lineWidth=10; ctx.strokeText(txt, 108, logoY+dy); ns(ctx);
-    const lg = ctx.createLinearGradient(0, logoY+dy-size, 0, logoY+dy);
-    lg.addColorStop(0,'#FFB224'); lg.addColorStop(1,'#E8630A');
-    ctx.fillStyle=lg; ctx.fillText(txt, 108, logoY+dy);
+  bg.addColorStop(0, C.bg1); bg.addColorStop(1, C.bg0);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  for (const [x, y, r, a] of [[150,70,180,0.55],[700,360,200,0.35],[480,40,140,0.25],[80,380,120,0.3]]) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(120,30,60,${a})`); g.addColorStop(1, 'rgba(120,30,60,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   }
+  ctx.strokeStyle='rgba(255,255,255,0.025)'; ctx.lineWidth=1;
+  for (let i=-H; i<W; i+=7) { ctx.beginPath(); ctx.moveTo(i, H); ctx.lineTo(i+H, 0); ctx.stroke(); }
+  for (let i=0; i<70; i++) {
+    const r = rand()*2.2 + 0.6;
+    ctx.fillStyle=`rgba(255,255,255,${0.25 + rand()*0.6})`;
+    ctx.beginPath(); ctx.arc(rand()*W, rand()*H, r, 0, Math.PI*2); ctx.fill();
+  }
+  for (const [x, y, r] of [[40,250,7],[195,28,6],[838,150,7],[205,395,6],[620,14,5]]) snowflake(ctx, x, y, r, 0.7);
+  ctx.restore();
 
-  const imgW=180, imgH=250, imgX=18, imgY=145;
-  if (brainrotImg) {
-    // sombra suave
-    ctx.shadowBlur=20; ctx.shadowColor='rgba(180,100,0,0.25)'; ctx.shadowOffsetX=4; ctx.shadowOffsetY=6;
-    ctx.fillStyle='rgba(255,255,255,0.1)'; rrect(ctx,imgX,imgY,imgW,imgH,18); ctx.fill(); ns(ctx);
-    // clip e desenho
-    ctx.save();
-    rrect(ctx,imgX,imgY,imgW,imgH,18); ctx.clip();
-    const sc = Math.min(imgW/brainrotImg.width, imgH/brainrotImg.height);
-    const dw=brainrotImg.width*sc, dh=brainrotImg.height*sc;
-    ctx.drawImage(brainrotImg, imgX+(imgW-dw)/2, imgY+(imgH-dh)/2, dw, dh);
+  // Moldura externa rosé
+  ctx.strokeStyle = roseGrad(ctx, 0, 0, W, H); ctx.lineWidth = 3;
+  rrect(ctx, 1.5, 1.5, W-3, H-3, 23); ctx.stroke();
+
+  // Coluna esquerda: logo + brainrot
+  const lx=16, lw=184;
+  glassPanel(ctx, lx, 16, lw, 128, 18);
+  if (logoImg) {
+    ctx.save(); rrect(ctx, lx+3, 19, lw-6, 122, 15); ctx.clip();
+    ctx.drawImage(logoImg, lx+3, 19 - (lw-6-122)/2, lw-6, lw-6);
     ctx.restore();
   }
+  snowCap(ctx, lx, 16, lw, 128, 18, 9);
 
-  // ── 3. Card principal ─────────────────────────────────────────────────────
-  const cx=215, cy=16, cw=W-cx-16, ch=H-32;
+  const by = 154, bh = H-16-by;
+  glassPanel(ctx, lx, by, lw, bh, 18);
+  if (brainrotImg) {
+    ctx.save(); rrect(ctx, lx+6, by+16, lw-12, bh-22, 14); ctx.clip();
+    const g = ctx.createRadialGradient(lx+lw/2, by+bh/2, 10, lx+lw/2, by+bh/2, lw*0.7);
+    g.addColorStop(0, mutColor+'55'); g.addColorStop(1, mutColor+'00');
+    ctx.fillStyle = g; ctx.fillRect(lx, by, lw, bh);
+    ctx.shadowBlur=18; ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowOffsetY=6;
+    drawContain(ctx, brainrotImg, lx+12, by+20, lw-24, bh-34);
+    ctx.restore(); ns(ctx);
+  } else {
+    ctx.fillStyle = mutColor; ctx.font = `800 80px "${FONT}"`; ctx.textAlign='center';
+    ctx.fillText(mutKey[0], lx+lw/2, by+bh/2+28);
+  }
+  snowCap(ctx, lx, by, lw, bh, 18, 9);
 
-  // Sombra do card
-  ctx.shadowBlur=24; ctx.shadowColor='rgba(180,100,0,0.2)'; ctx.shadowOffsetX=4; ctx.shadowOffsetY=8;
-  ctx.fillStyle='#FFFEF5'; rrect(ctx,cx,cy,cw,ch,20); ctx.fill(); ns(ctx);
+  // Card principal
+  const cx=214, cy=16, cw=W-cx-16, ch=H-32;
+  glassPanel(ctx, cx, cy, cw, ch, 20);
+  snowCap(ctx, cx, cy, cw, ch, 20, 10);
 
-  // Borda dourada dupla
-  const gbord = ctx.createLinearGradient(cx,cy,cx+cw,cy+ch);
-  gbord.addColorStop(0,'#FFDC00'); gbord.addColorStop(0.4,'#FFB800');
-  gbord.addColorStop(0.7,'#FFE066'); gbord.addColorStop(1,'#FFC200');
-  ctx.strokeStyle=gbord; ctx.lineWidth=4;
-  ctx.shadowBlur=8; ctx.shadowColor='rgba(255,180,0,0.5)';
-  rrect(ctx,cx,cy,cw,ch,20); ctx.stroke(); ns(ctx);
-  ctx.strokeStyle='rgba(255,230,80,0.5)'; ctx.lineWidth=1.5;
-  rrect(ctx,cx+5,cy+5,cw-10,ch-10,16); ctx.stroke();
+  // Header
+  const hy = cy+26;
+  fieldIcon(ctx, cx+18, hy, 46, 'user');
+  ctx.textAlign='left';
+  ctx.fillStyle=C.label; ctx.font=`600 13px "${FONT}"`; ctx.fillText('Stealer', cx+76, hy+15);
+  ctx.fillStyle=C.text;  ctx.font=`800 22px "${FONT}"`; ctx.fillText(fitText(ctx, stealer, 330), cx+76, hy+40);
 
-  // ── 4. Header: Stealer ───────────────────────────────────────────────────
-  const hx=cx+14, hy=cy+14;
+  const bw=140, bh2=42, bx=cx+cw-bw-20, byy=hy+2;
+  ctx.shadowBlur=16; ctx.shadowColor='rgba(220,30,70,0.55)'; ctx.shadowOffsetY=3;
+  const sg = ctx.createLinearGradient(0, byy, 0, byy+bh2);
+  sg.addColorStop(0, '#F0325A'); sg.addColorStop(1, '#8E0E2E');
+  ctx.fillStyle = sg; rrect(ctx, bx, byy, bw, bh2, 21); ctx.fill(); ns(ctx);
+  ctx.strokeStyle = roseGrad(ctx, bx, byy, bw, bh2); ctx.lineWidth = 2; rrect(ctx, bx, byy, bw, bh2, 21); ctx.stroke();
+  ctx.fillStyle='#FFFFFF'; ctx.font=`800 19px "${FONT}"`; ctx.textAlign='center';
+  ctx.fillText('STOLEN', bx+bw/2, byy+28);
 
-  // Avatar círculo laranja
-  ctx.shadowBlur=6; ctx.shadowColor='rgba(200,80,0,0.3)'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=3;
-  ctx.fillStyle='#F5820D';
-  ctx.beginPath(); ctx.arc(hx+22, hy+22, 22, 0, Math.PI*2); ctx.fill(); ns(ctx);
-  // Silhueta de pessoa em branco
-  ctx.fillStyle='#FFFFFF';
-  ctx.beginPath(); ctx.arc(hx+22, hy+16, 9, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(hx+22, hy+33, 13, 10, 0, Math.PI, 0); ctx.fill();
+  const sep1 = cy+88;
+  const sl = ctx.createLinearGradient(cx+16, 0, cx+cw-16, 0);
+  sl.addColorStop(0, 'rgba(226,168,143,0)'); sl.addColorStop(0.5, 'rgba(226,168,143,0.6)'); sl.addColorStop(1, 'rgba(226,168,143,0)');
+  ctx.strokeStyle = sl; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx+16, sep1); ctx.lineTo(cx+cw-16, sep1); ctx.stroke();
 
-  // "Stealer" label pequeno
-  ctx.fillStyle='#999999'; ctx.font=`13px "${FONT}"`; ctx.textAlign='left';
-  ctx.fillText('Stealer', hx+52, hy+14);
-  // Nome do stealer em destaque
-  ctx.fillStyle='#1A0A00'; ctx.font=`bold 20px "${FONT}"`;
-  ctx.fillText(stealer, hx+52, hy+36);
-
-  // Badge STOLEN
-  const bw=130, bh=38, bx=cx+cw-bw-14, by=hy+5;
-  ctx.shadowBlur=8; ctx.shadowColor='rgba(180,0,0,0.4)'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=3;
-  const gr = ctx.createLinearGradient(bx,by,bx,by+bh);
-  gr.addColorStop(0,'#EE0000'); gr.addColorStop(1,'#AA0000');
-  ctx.fillStyle=gr; rrect(ctx,bx,by,bw,bh,19); ctx.fill(); ns(ctx);
-  ctx.fillStyle='#FFFFFF'; ctx.font=`bold 18px "${FONT}"`; ctx.textAlign='center';
-  ctx.fillText('STOLEN', bx+bw/2, by+25);
-
-  // Separador
-  const sepY = cy+72;
-  ctx.strokeStyle='rgba(230,160,0,0.4)'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(cx+12,sepY); ctx.lineTo(cx+cw-12,sepY); ctx.stroke();
-
-  // ── 5. Campos de info ────────────────────────────────────────────────────
-  const iconSz=42, fieldX=cx+14, petImgX=cx+cw-170, petImgY=cy+80, petImgW=152, petImgH=200;
+  // Campos
+  const iconS=40, fx=cx+18, rowsW=cw-36-180, rowH=56;
   const rows = [
-    { label:'Brainrot',   value: name,    color:'#1A0A00', type:'pet'      },
-    { label:'Mutation',   value: mutKey,  color: mutColor, type:'mutation'  },
-    { label:'Generation', value: genText, color:'#1A0A00', type:'gen'       },
-    { label:'Traits',     value: traits.length>0 ? traits.join(' · ') : 'None', color:'#1A0A00', type:'traits' },
+    { label:'Brainrot',   value:name,    color:C.text,   type:'pet' },
+    { label:'Mutation',   value:mutKey,  color:mutColor, type:'mutation' },
+    { label:'Generation', value:genText, color:C.text,   type:'gen' },
+    { label:'Traits',     value:traits.length ? traits.join('  •  ') : 'None', color:C.text, type:'traits' },
   ];
-  const fieldAreaW = petImgX - fieldX - 12;
-
   rows.forEach((row, i) => {
-    const fy = sepY+10 + i*68;
-    drawFieldIcon(ctx, fieldX, fy, iconSz, row.type);
-
-    // Label pequeno
-    ctx.fillStyle='#999999'; ctx.font=`12px "${FONT}"`; ctx.textAlign='left';
-    ctx.fillText(row.label, fieldX+iconSz+12, fy+14);
-
-    // Fundo do campo (pill branca)
-    ctx.shadowBlur=3; ctx.shadowColor='rgba(0,0,0,0.06)'; ctx.shadowOffsetY=2;
-    ctx.fillStyle='#FFFFFF'; rrect(ctx, fieldX+iconSz+8, fy+18, fieldAreaW-iconSz-8, 28, 8); ctx.fill(); ns(ctx);
-
-    // Valor
-    const maxChars = row.type==='traits' ? 55 : 40;
-    const val = row.value.length>maxChars ? row.value.slice(0,maxChars)+'...' : row.value;
-    ctx.fillStyle=row.color; ctx.font=`bold 15px "${FONT}"`;
-    ctx.fillText(val, fieldX+iconSz+18, fy+36);
+    const y = sep1 + 10 + i*rowH;
+    fieldIcon(ctx, fx, y+4, iconS, row.type);
+    ctx.textAlign='left'; ctx.fillStyle=C.label; ctx.font=`600 12px "${FONT}"`;
+    ctx.fillText(row.label, fx+iconS+14, y+14);
+    ctx.fillStyle=C.pill; rrect(ctx, fx+iconS+10, y+19, rowsW-iconS-10, 28, 9); ctx.fill();
+    ctx.strokeStyle='rgba(251,221,203,0.14)'; ctx.lineWidth=1; rrect(ctx, fx+iconS+10, y+19, rowsW-iconS-10, 28, 9); ctx.stroke();
+    ctx.fillStyle=row.color; ctx.font=`800 16px "${FONT}"`;
+    if (row.color !== C.text) { ctx.shadowBlur=10; ctx.shadowColor=row.color+'99'; }
+    ctx.fillText(fitText(ctx, row.value, rowsW-iconS-34), fx+iconS+22, y+39); ns(ctx);
   });
 
-  // ── 6. Imagem do brainrot dentro do card (direita) ───────────────────────
+  // Caixa da imagem dentro do card
+  const px = cx+cw-18-166, py = sep1+12, pw = 166, ph = rowH*4-10;
+  ctx.shadowBlur=18; ctx.shadowColor=mutColor+'66';
+  ctx.fillStyle='rgba(10,2,6,0.45)'; rrect(ctx, px, py, pw, ph, 16); ctx.fill(); ns(ctx);
+  ctx.strokeStyle=mutColor; ctx.lineWidth=2.5; rrect(ctx, px, py, pw, ph, 16); ctx.stroke();
   if (brainrotImg) {
-    ctx.shadowBlur=12; ctx.shadowColor=mutColor+'66'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=4;
-    ctx.fillStyle='#FFFDF8'; rrect(ctx,petImgX,petImgY,petImgW,petImgH,14); ctx.fill(); ns(ctx);
-    ctx.strokeStyle=mutColor; ctx.lineWidth=2.5;
-    ctx.shadowBlur=8; ctx.shadowColor=mutColor+'88';
-    rrect(ctx,petImgX,petImgY,petImgW,petImgH,14); ctx.stroke(); ns(ctx);
-    // imagem
-    const sc2 = Math.min((petImgW-16)/brainrotImg.width, (petImgH-16)/brainrotImg.height);
-    const dw2=brainrotImg.width*sc2, dh2=brainrotImg.height*sc2;
-    ctx.save(); rrect(ctx,petImgX+4,petImgY+4,petImgW-8,petImgH-8,11); ctx.clip();
-    ctx.drawImage(brainrotImg, petImgX+(petImgW-dw2)/2, petImgY+(petImgH-dh2)/2, dw2, dh2);
+    ctx.save(); rrect(ctx, px+4, py+4, pw-8, ph-8, 12); ctx.clip();
+    drawContain(ctx, brainrotImg, px+10, py+10, pw-20, ph-38);
     ctx.restore();
-    // label de mutação
-    ctx.fillStyle=mutColor; ctx.font=`bold 11px "${FONT}"`; ctx.textAlign='center';
-    ctx.fillText(mutKey.toUpperCase(), petImgX+petImgW/2, petImgY+petImgH-6);
   } else {
-    // Placeholder colorido com inicial
-    ctx.shadowBlur=12; ctx.shadowColor=mutColor+'66';
-    ctx.fillStyle=mutColor+'22'; rrect(ctx,petImgX,petImgY,petImgW,petImgH,14); ctx.fill(); ns(ctx);
-    ctx.strokeStyle=mutColor; ctx.lineWidth=2.5; rrect(ctx,petImgX,petImgY,petImgW,petImgH,14); ctx.stroke();
-    ctx.fillStyle=mutColor; ctx.font=`bold 70px "${FONT}"`; ctx.textAlign='center';
-    ctx.fillText(mutKey[0]||'?', petImgX+petImgW/2, petImgY+petImgH/2+25);
-    ctx.font=`bold 11px "${FONT}"`;
-    ctx.fillText(mutKey.toUpperCase(), petImgX+petImgW/2, petImgY+petImgH-8);
+    ctx.fillStyle=mutColor; ctx.font=`800 70px "${FONT}"`; ctx.textAlign='center';
+    ctx.fillText(mutKey[0], px+pw/2, py+ph/2+20);
   }
+  ctx.fillStyle=mutColor; ctx.font=`800 12px "${FONT}"`; ctx.textAlign='center';
+  ctx.shadowBlur=8; ctx.shadowColor=mutColor+'AA';
+  ctx.fillText(mutKey.toUpperCase(), px+pw/2, py+ph-11); ns(ctx);
 
-  // ── 7. Barra de rodapé ───────────────────────────────────────────────────
-  const barY = cy+ch-40, barH=32;
-  ctx.strokeStyle='rgba(230,160,0,0.4)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.moveTo(cx+12, barY-2); ctx.lineTo(cx+cw-12, barY-2); ctx.stroke();
-
-  ctx.shadowBlur=4; ctx.shadowColor='rgba(0,0,0,0.05)'; ctx.shadowOffsetY=2;
-  ctx.fillStyle='rgba(255,248,220,0.7)'; rrect(ctx,cx+10,barY,cw-20,barH,10); ctx.fill(); ns(ctx);
-
+  // Rodapé em blocos (igual ao MEOWL)
   const now = new Date();
-  const timeStr = now.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  const dateStr = now.toLocaleDateString('pt-BR');
-  ctx.fillStyle='#7A5000'; ctx.font=`bold 12px "${FONT}"`; ctx.textAlign='left';
-  ctx.fillText(timeStr, cx+22, barY+21);
-  ctx.fillText(dateStr, cx+120, barY+21);
-  ctx.fillStyle='rgba(120,80,0,0.5)'; ctx.font=`11px "${FONT}"`; ctx.textAlign='right';
-  ctx.fillText('LuxarHub Steal Tracker', cx+cw-18, barY+21);
+  const tiles = [
+    { icon:'clock', label:'Time', value: now.toLocaleTimeString('pt-BR', { timeZone:'America/Sao_Paulo', hour:'2-digit', minute:'2-digit', second:'2-digit' }) },
+    { icon:'date',  label:'Date', value: now.toLocaleDateString('pt-BR', { timeZone:'America/Sao_Paulo' }) },
+    { icon:'gen',   label:'Luxar Scripts', value:'Steal Log' },
+  ];
+  const ty = cy+ch-58, th = 46, gap = 10, tw = (cw-36-gap*2)/3;
+  tiles.forEach((t, i) => {
+    const tx = cx+18 + i*(tw+gap);
+    ctx.fillStyle=C.pill; rrect(ctx, tx, ty, tw, th, 12); ctx.fill();
+    ctx.strokeStyle='rgba(251,221,203,0.2)'; ctx.lineWidth=1; rrect(ctx, tx, ty, tw, th, 12); ctx.stroke();
+    fieldIcon(ctx, tx+8, ty+8, 30, t.icon);
+    ctx.textAlign='left';
+    ctx.fillStyle=C.label; ctx.font=`600 11px "${FONT}"`; ctx.fillText(t.label, tx+48, ty+18);
+    ctx.fillStyle=C.text;  ctx.font=`800 15px "${FONT}"`; ctx.fillText(t.value, tx+48, ty+37);
+  });
 
   return canvas.toBuffer('image/png');
 }
@@ -334,11 +341,7 @@ app.post('/steal', async (req, res) => {
     const img = await generateCard({ name, mutation, traits, genText, value, stealer });
     const form = new FormData();
     form.append('file', img, { filename: 'steal.png', contentType: 'image/png' });
-    form.append('payload_json', JSON.stringify({
-      username: 'STEAL LOG',
-      avatar_url: 'https://tr.rbxcdn.com/180DAY-108394624972794/150/150/Image/Webp/noFilter',
-      content: '',
-    }));
+    form.append('payload_json', JSON.stringify({ username: 'Luxar Steal Log', content: '' }));
     await axios.post(WEBHOOK_URL, form, { headers: form.getHeaders(), timeout: 15000 });
     res.json({ ok: true });
   } catch (err) {

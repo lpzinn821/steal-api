@@ -12,13 +12,49 @@ const FONT = GlobalFonts.has('Arial') ? 'Arial'
            : GlobalFonts.has('FreeSans') ? 'FreeSans'
            : 'sans-serif';
 
-console.log('[steal-api] Usando fonte:', FONT);
+console.log('[steal-api] Fonte:', FONT);
 
-const app  = express();
+const app = express();
 app.use(express.json());
 
 const PORT        = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
+
+// Cache de imagens para não bater na API do Fandom toda vez
+const imgCache = new Map();
+
+const FANDOM_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/json',
+};
+
+async function fetchBrainrotImage(name) {
+  if (imgCache.has(name)) return imgCache.get(name);
+
+  try {
+    // Busca a página pelo nome do brainrot
+    const searchUrl = `https://stealabrainrot.fandom.com/api.php?action=query&titles=${encodeURIComponent(name)}&prop=pageimages&pithumbsize=200&format=json`;
+    const res = await axios.get(searchUrl, { headers: FANDOM_HEADERS, timeout: 5000 });
+    const pages = res.data?.query?.pages || {};
+    const page = Object.values(pages)[0];
+    const thumbUrl = page?.thumbnail?.source;
+
+    if (!thumbUrl) {
+      imgCache.set(name, null);
+      return null;
+    }
+
+    // Baixa a imagem
+    const imgRes = await axios.get(thumbUrl, { responseType: 'arraybuffer', headers: FANDOM_HEADERS, timeout: 5000 });
+    const img = await loadImage(Buffer.from(imgRes.data));
+    imgCache.set(name, img);
+    return img;
+  } catch(e) {
+    console.error('[steal-api] Fandom img err:', e.message);
+    imgCache.set(name, null);
+    return null;
+  }
+}
 
 const MUTATION_COLORS = {
   Bloodrot:'#C0003A', Candy:'#FF46F6', Crystal:'#C389E5', Cursed:'#F53838',
@@ -38,13 +74,6 @@ function rrect(ctx,x,y,w,h,r){
 
 function ns(ctx){ ctx.shadowBlur=0; ctx.shadowColor='transparent'; ctx.shadowOffsetX=0; ctx.shadowOffsetY=0; }
 
-async function fetchBrainrotImage(name) {
-  // Tenta buscar imagem do brainrot pela API do Phantom (adicione a URL real aqui)
-  // const PHANTOM_API = process.env.PHANTOM_API_URL;
-  // if (PHANTOM_API) { ... }
-  return null;
-}
-
 async function generateCard(data) {
   const W=860, H=420;
   const canvas = createCanvas(W, H);
@@ -57,11 +86,10 @@ async function generateCard(data) {
   const name     = data.name     || 'Unknown';
   const genText  = data.genText  || data.value || 'N/A';
 
-  // Tenta carregar imagem do brainrot
-  let brainrotImg = null;
-  try { brainrotImg = await fetchBrainrotImage(name); } catch(e) {}
+  // Busca imagem do brainrot no Fandom
+  const brainrotImg = await fetchBrainrotImage(name);
 
-  // Background
+  // ── Background ──────────────────────────────────────────────────────────
   const bg = ctx.createLinearGradient(0,0,0,H);
   bg.addColorStop(0,'#FFF9EF'); bg.addColorStop(1,'#FFE8C0');
   ctx.fillStyle = bg; rrect(ctx,0,0,W,H,22); ctx.fill();
@@ -77,19 +105,19 @@ async function generateCard(data) {
   ctx.strokeStyle='rgba(255,215,0,0.4)'; ctx.lineWidth=1.5;
   rrect(ctx,9,9,W-18,H-18,15); ctx.stroke();
 
-  // TOP-LEFT badge STEAL LOG
+  // ── TOP-LEFT badge: STEAL LOG ────────────────────────────────────────────
   ctx.shadowBlur=8; ctx.shadowColor='rgba(0,0,0,0.3)'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=3;
   ctx.fillStyle='#1E0F08'; rrect(ctx,20,20,190,64,16); ctx.fill(); ns(ctx);
   ctx.fillStyle='#E8630A'; ctx.beginPath(); ctx.arc(50,52,18,0,Math.PI*2); ctx.fill();
   ctx.fillStyle='#FFD700'; ctx.font=`bold 20px "${FONT}"`; ctx.textAlign='left'; ctx.fillText('STEAL',76,46);
   ctx.fillStyle='#FFFFFF'; ctx.fillText('LOG',76,70);
 
-  // TOP-RIGHT STOLEN badge
+  // ── TOP-RIGHT badge: STOLEN ──────────────────────────────────────────────
   ctx.shadowBlur=6; ctx.shadowColor='rgba(180,0,0,0.4)'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=2;
   ctx.fillStyle='#CC0000'; rrect(ctx,W-165,20,145,44,22); ctx.fill(); ns(ctx);
   ctx.fillStyle='#FFFFFF'; ctx.font=`bold 20px "${FONT}"`; ctx.textAlign='center'; ctx.fillText('STOLEN',W-92,48);
 
-  // Stealer row
+  // ── Stealer row ──────────────────────────────────────────────────────────
   ctx.shadowBlur=6; ctx.shadowColor='rgba(0,0,0,0.2)';
   ctx.fillStyle='#E8630A'; rrect(ctx,20,100,60,56,10); ctx.fill(); ns(ctx);
   ctx.fillStyle='#E8630A'; ctx.font=`bold 13px "${FONT}"`; ctx.textAlign='left'; ctx.fillText('Stealer',92,118);
@@ -100,7 +128,7 @@ async function generateCard(data) {
   ctx.strokeStyle='rgba(255,180,0,0.5)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(20,170); ctx.lineTo(W-20,170); ctx.stroke();
 
-  // Inner card
+  // ── Info card (left) ─────────────────────────────────────────────────────
   ctx.shadowBlur=8; ctx.shadowColor='rgba(0,0,0,0.12)'; ctx.shadowOffsetX=2; ctx.shadowOffsetY=3;
   ctx.fillStyle='#FFFDF8'; rrect(ctx,20,178,580,192,14); ctx.fill(); ns(ctx);
   ctx.strokeStyle='#F0A040'; ctx.lineWidth=2; rrect(ctx,20,178,580,192,14); ctx.stroke();
@@ -111,35 +139,42 @@ async function generateCard(data) {
     ctx.fillStyle=valueColor||'#1E0F08'; ctx.font=`bold 15px "${FONT}"`; ctx.fillText(value,70,rowY+14);
   }
 
-  fieldRow('Brainrot', name,    '#1E0F08', '#E8630A', 210);
-  fieldRow('Mutation', mutKey,  mutColor,  '#8B44CC', 255);
-  fieldRow('Generation', genText,'#1E0F08','#D4820A', 300);
+  fieldRow('Brainrot',   name,    '#1E0F08', '#E8630A', 210);
+  fieldRow('Mutation',   mutKey,  mutColor,  '#8B44CC', 255);
+  fieldRow('Generation', genText, '#1E0F08', '#D4820A', 300);
 
   ctx.fillStyle='#CC6611'; rrect(ctx,30,332,32,28,8); ctx.fill();
   ctx.fillStyle='#CC6611'; ctx.font=`bold 11px "${FONT}"`; ctx.textAlign='left'; ctx.fillText('Traits',70,332);
   const ts = traits.length>0 ? traits.join('  ·  ') : 'None';
   ctx.fillStyle='#1E0F08'; ctx.font=`bold 13px "${FONT}"`;
-  ctx.fillText(ts.length>55 ? ts.slice(0,55)+'...' : ts, 70, 352);
+  ctx.fillText(ts.length>60 ? ts.slice(0,60)+'...' : ts, 70, 352);
 
-  // Right block: imagem do brainrot OU letra da mutação
+  // ── Right block: imagem do brainrot ──────────────────────────────────────
   const rx=620, ry=178, rw=W-rx-20, rh=192;
   ctx.shadowBlur=20; ctx.shadowColor=mutColor+'99';
   ctx.fillStyle=mutColor+'22'; rrect(ctx,rx,ry,rw,rh,14); ctx.fill(); ns(ctx);
   ctx.strokeStyle=mutColor; ctx.lineWidth=2.5; rrect(ctx,rx,ry,rw,rh,14); ctx.stroke();
 
   if (brainrotImg) {
+    // Desenha imagem mantendo proporção, centralizada
+    const iw = brainrotImg.width, ih = brainrotImg.height;
+    const pad = 10;
+    const scale = Math.min((rw-pad*2)/iw, (rh-pad*2-16)/ih);
+    const dw = iw*scale, dh = ih*scale;
+    const dx = rx+(rw-dw)/2, dy = ry+pad;
     ctx.save();
     rrect(ctx,rx+4,ry+4,rw-8,rh-8,10); ctx.clip();
-    ctx.drawImage(brainrotImg, rx+4, ry+4, rw-8, rh-8);
+    ctx.drawImage(brainrotImg, dx, dy, dw, dh);
     ctx.restore();
   } else {
     ctx.fillStyle=mutColor; ctx.font=`bold 72px "${FONT}"`; ctx.textAlign='center';
     ctx.fillText(mutKey[0]||'?', rx+rw/2, ry+rh/2+24);
   }
+  // Label da mutação embaixo do bloco
   ctx.fillStyle=mutColor; ctx.font=`bold 11px "${FONT}"`; ctx.textAlign='center';
-  ctx.fillText(mutKey.toUpperCase(), rx+rw/2, ry+rh-12);
+  ctx.fillText(mutKey.toUpperCase(), rx+rw/2, ry+rh-10);
 
-  // Bottom bar
+  // ── Bottom bar ───────────────────────────────────────────────────────────
   const barY=H-50;
   ctx.shadowBlur=6; ctx.shadowColor='rgba(0,0,0,0.1)'; ctx.shadowOffsetY=-2;
   ctx.fillStyle='#FFF3DC'; rrect(ctx,20,barY,W-40,36,10); ctx.fill(); ns(ctx);

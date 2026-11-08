@@ -3,6 +3,7 @@ const express  = require('express');
 const { createCanvas, GlobalFonts, loadImage } = require('@napi-rs/canvas');
 const axios    = require('axios');
 const FormData = require('form-data');
+const { GIFEncoder, quantize, applyPalette } = require('gifenc');
 const path     = require('path');
 const fs       = require('fs');
 
@@ -46,6 +47,37 @@ async function fetchBrainrotImage(name) {
     return img;
   } catch(e) {
     imgCache.set(name, null); return null;
+  }
+}
+
+const avatarCache = new Map();
+
+async function fetchAvatar(userId, username) {
+  const key = userId || username;
+  if (!key) return null;
+  if (avatarCache.has(key)) return avatarCache.get(key);
+  try {
+    let id = userId;
+    if (!id) {
+      const u = await axios.post('https://users.roblox.com/v1/usernames/users',
+        { usernames: [username], excludeBannedUsers: false }, { timeout: 5000 });
+      id = u.data?.data?.[0]?.id;
+    }
+    if (!id) return null;
+    let url = null;
+    for (let i = 0; i < 3 && !url; i++) {
+      const t = await axios.get(`https://thumbnails.roblox.com/v1/users/avatar?userIds=${id}&size=420x420&format=Png&isCircular=false`, { timeout: 5000 });
+      const d = t.data?.data?.[0];
+      if (d?.state === 'Completed') url = d.imageUrl;
+      else await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!url) return null;
+    const imgR = await axios.get(url, { responseType: 'arraybuffer', timeout: 5000 });
+    const img = await loadImage(Buffer.from(imgR.data));
+    avatarCache.set(key, img);
+    return img;
+  } catch(e) {
+    return null;
   }
 }
 
@@ -192,7 +224,11 @@ async function generateCard(data) {
   const stealer  = data.stealer || 'Unknown';
   const name     = data.name    || 'Unknown';
   const genText  = data.genText || data.value || 'N/A';
-  const brainrotImg = await fetchBrainrotImage(name);
+  const [brainrotImg, avatarImg] = await Promise.all([
+    fetchBrainrotImage(name),
+    fetchAvatar(data.stealerId, data.stealer),
+  ]);
+  const leftImg = avatarImg || brainrotImg;
   const rand = rng(1337);
 
   // Fundo bordô
@@ -207,7 +243,7 @@ async function generateCard(data) {
   }
   ctx.strokeStyle='rgba(255,255,255,0.025)'; ctx.lineWidth=1;
   for (let i=-H; i<W; i+=7) { ctx.beginPath(); ctx.moveTo(i, H); ctx.lineTo(i+H, 0); ctx.stroke(); }
-  for (let i=0; i<70; i++) {
+  for (let i=0; i<30; i++) {
     const r = rand()*2.2 + 0.6;
     ctx.fillStyle=`rgba(255,255,255,${0.25 + rand()*0.6})`;
     ctx.beginPath(); ctx.arc(rand()*W, rand()*H, r, 0, Math.PI*2); ctx.fill();
@@ -231,13 +267,15 @@ async function generateCard(data) {
 
   const by = 154, bh = H-16-by;
   glassPanel(ctx, lx, by, lw, bh, 18);
-  if (brainrotImg) {
+  if (leftImg) {
+    const glow = avatarImg ? C.rose1 : mutColor;
     ctx.save(); rrect(ctx, lx+6, by+16, lw-12, bh-22, 14); ctx.clip();
     const g = ctx.createRadialGradient(lx+lw/2, by+bh/2, 10, lx+lw/2, by+bh/2, lw*0.7);
-    g.addColorStop(0, mutColor+'55'); g.addColorStop(1, mutColor+'00');
+    g.addColorStop(0, glow+'55'); g.addColorStop(1, glow+'00');
     ctx.fillStyle = g; ctx.fillRect(lx, by, lw, bh);
     ctx.shadowBlur=18; ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowOffsetY=6;
-    drawContain(ctx, brainrotImg, lx+12, by+20, lw-24, bh-34);
+    if (avatarImg) drawContain(ctx, leftImg, lx-40, by-10, lw+80, bh+30);
+    else drawContain(ctx, leftImg, lx+8, by+16, lw-16, bh-26);
     ctx.restore(); ns(ctx);
   } else {
     ctx.fillStyle = mutColor; ctx.font = `800 80px "${FONT}"`; ctx.textAlign='center';
@@ -327,20 +365,57 @@ async function generateCard(data) {
     ctx.fillStyle=C.text;  ctx.font=`800 15px "${FONT}"`; ctx.fillText(t.value, tx+48, ty+37);
   });
 
-  return canvas.toBuffer('image/png');
+  return canvas;
+}
+
+// Neve caindo: cada floco desce a altura inteira em FRAMES quadros, então o loop fecha sem pulo
+const FRAMES = 30, FRAME_MS = 70;
+async function generateGif(data) {
+  const base = await generateCard(data);
+  const W = base.width, H = base.height;
+  const rand = rng(4242);
+  const flakes = Array.from({ length: 70 }, () => ({
+    x: rand()*W, y: rand()*H, r: 0.8 + rand()*2.4,
+    a: 0.35 + rand()*0.55, sway: 4 + rand()*10, phase: rand()*Math.PI*2,
+    big: rand() < 0.12,
+  }));
+
+  const frame = createCanvas(W, H);
+  const ctx = frame.getContext('2d');
+  const gif = GIFEncoder();
+  let palette = null;
+
+  for (let f = 0; f < FRAMES; f++) {
+    const t = f / FRAMES;
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(base, 0, 0);
+    ctx.save(); rrect(ctx, 0, 0, W, H, 24); ctx.clip();
+    for (const s of flakes) {
+      const y = (s.y + t*H) % H;
+      const x = s.x + Math.sin(t*Math.PI*2 + s.phase) * s.sway;
+      if (s.big) snowflake(ctx, x, y, s.r*2.6, s.a);
+      else { ctx.fillStyle = `rgba(255,255,255,${s.a})`; ctx.beginPath(); ctx.arc(x, y, s.r, 0, Math.PI*2); ctx.fill(); }
+    }
+    ctx.restore();
+    const { data: rgba } = ctx.getImageData(0, 0, W, H);
+    if (!palette) palette = quantize(rgba, 256);
+    gif.writeFrame(applyPalette(rgba, palette), W, H, { palette, delay: FRAME_MS });
+  }
+  gif.finish();
+  return Buffer.from(gif.bytes());
 }
 
 // ── Rotas ────────────────────────────────────────────────────────────────────
 app.post('/steal', async (req, res) => {
-  const { name, mutation, traits, genText, value, stealer } = req.body;
+  const { name, mutation, traits, genText, value, stealer, stealerId } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   if (!WEBHOOK_URL) return res.status(400).json({ error: 'WEBHOOK_URL not set' });
 
   try {
     console.log(`[steal-api] ${stealer} roubou ${name} (${mutation})`);
-    const img = await generateCard({ name, mutation, traits, genText, value, stealer });
+    const img = await generateGif({ name, mutation, traits, genText, value, stealer, stealerId });
     const form = new FormData();
-    form.append('file', img, { filename: 'steal.png', contentType: 'image/png' });
+    form.append('file', img, { filename: 'steal.gif', contentType: 'image/gif' });
     form.append('payload_json', JSON.stringify({ username: 'Luxar Steal Log', content: '' }));
     await axios.post(WEBHOOK_URL, form, { headers: form.getHeaders(), timeout: 15000 });
     res.json({ ok: true });
@@ -352,5 +427,5 @@ app.post('/steal', async (req, res) => {
 
 app.get('/', (_req, res) => res.json({ status: 'steal-api online', font: FONT }));
 
-module.exports = { generateCard };
+module.exports = { generateCard, generateGif };
 if (!process.env.NO_LISTEN) app.listen(PORT, () => console.log(`[steal-api] Porta ${PORT} | Fonte: ${FONT}`));
